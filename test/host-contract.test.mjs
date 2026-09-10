@@ -19,6 +19,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { FOODS } from '../src/config.mjs'
 import { createSurvivalState } from '../src/state.mjs'
 import { FEED_TOOL_NAME, createFeedTool } from '../src/tool.mjs'
+import { listPackedFiles } from '../scripts/files-manifest.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -82,11 +83,39 @@ test('Host 半体注册的钩子与提示词符合预期', () => {
     assert.ok(source.includes("'" + event + "'"), '应监听 ' + event)
   }
 
-  // 这两条是踩过坑的硬约束，用断言把它们钉在这里，防止日后被"顺手改成更直观的写法"。
+  // 这三条是踩过坑的硬约束，用断言把它们钉在这里，防止日后被"顺手改成更直观的写法"。
   assert.ok(!/return\s*\{\s*kind:\s*'reject'/.test(source),
     'pre-step 绝不能返回 reject：那会连用户刚提交的输入一起丢弃')
   assert.ok(source.includes('systemPrompt.context'),
     '应注册动态状态上下文')
   assert.ok(!/systemPrompt[\s\S]{0,200}context\([\s\S]{0,400}return undefined/.test(source),
     '动态上下文不得返回 undefined：那会让所有会话的回合一起失败')
+})
+
+test('包文件清单包含一行安装所必需的全部文件', async () => {
+  // "一行安装即可用"依赖产物入库，而产物是否真的在包内只由 package.json 的 files 决定。
+  // npm pack 在受限环境会因写缓存被拒，所以这里复刻 npm 的匹配规则自己断言。
+  const packed = await listPackedFiles(ROOT)
+
+  const required = [
+    'cordis.patch.yml', // 组合层：缺了插件不会被挂载
+    'lib/index.mjs',    // Host 半体入口（main 指向它）
+    'lib/client.js',    // 客户端半体（exports["./client"] 指向它）
+    'lib/state.mjs',
+    'lib/config.mjs',
+    'lib/tool.mjs',
+    'README.md',
+    'LICENSE',
+  ]
+  for (const file of required) {
+    assert.ok(packed.includes(file), '包内应包含 ' + file)
+  }
+
+  // 源码入库是本仓库刻意的分发选择，便于用户审计与本地重建。
+  assert.ok(packed.includes('src/index.mjs'), '包内应包含源码')
+  assert.ok(packed.includes('src/client/index.js'), '包内应包含客户端源码')
+
+  // 测试与构建脚本不应污染用户安装（它们不是运行所需）。
+  assert.ok(!packed.some((file) => file.startsWith('test/')), '包内不应包含 test/')
+  assert.ok(!packed.some((file) => file.startsWith('scripts/')), '包内不应包含 scripts/')
 })

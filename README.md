@@ -115,7 +115,7 @@ dsh plugin --profile web remove dsh-survival-mode
 
 ```sh
 node test/host.test.mjs          # 14 个状态机行为测试
-node test/host-contract.test.mjs # 用真实的 defineTool 编译工具 schema
+node test/host-contract.test.mjs # 真实 defineTool 编译工具 schema + 包文件清单
 node scripts/build.mjs           # 产出 lib/
 node scripts/verify.mjs          # 产物自检 29 项（发布前必跑）
 npm test                         # 上面两个测试串行跑
@@ -124,6 +124,20 @@ npm test                         # 上面两个测试串行跑
 > 用 `node test/host.test.mjs` 而不是 `node --test test/`：后者会为每个测试文件 spawn 子进程，在受限沙箱里会以 `EPERM` 失败。
 
 `host-contract.test.mjs` 会从 DSH 部署目录里找真实的 `@deepseek-ai/dsh-tools`，用它编译本插件的工具定义——`parameters` 根开放性与 `output.schema` 值根必填这两条规则**只有让真正的编译器跑一次才能验证**（本项目在这上面失败过两次）。找不到官方包时该测试会 skip，不会把机器相关路径变成硬失败。
+
+### 验证过的安装链路
+
+本插件已在真实 profile 上完整走通一遍，供你判断"卡在哪一步"：
+
+```sh
+dsh plugin --profile web add .     # → + dsh-survival-mode link:…
+dsh --profile web --dump-config    # → 启动图内出现 id/name: dsh-survival-mode
+```
+
+两个容易踩的坑：
+
+- **`dsh plugin add` 与 `dsh --dump-config` 都不是只读命令。** 前者写 profile 的 `dependencies` 与 `dsh.profile.bundles`，后者会重写 profile 的 `cordis.yml`（`prepareProfile` → `writeFileSync`）。在受限沙箱/只读环境里都会以 `EPERM` 失败——错误信息指向 profile 目录，而不是插件本身。
+- **`npm pack --dry-run` 会写 npm 缓存**，在这类环境里同样 `EPERM`。所以本仓库改用 `test/host-contract.test.mjs` 里的文件清单断言来复刻 npm 的 `files` 匹配规则，不依赖该命令。
 
 ### 结构
 
