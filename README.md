@@ -134,6 +134,12 @@ dsh plugin --profile web add .     # → + dsh-survival-mode link:…
 dsh --profile web --dump-config    # → 启动图内出现 id/name: dsh-survival-mode
 ```
 
+装完后在运行中的 DSH 里实测到的事实：
+
+- **Host 半体已挂载且工具已注册**：`survival_feed` 出现在模型的工具列表中。这一点比"文件都在"有力得多——`apply()` 是在注册完服务、三个事件钩子与两段提示词**之后**才注册工具的，所以工具出现意味着前面那些调用都没有抛错。
+- **客户端半体可被服务端读取**：`profiles/<p>/node_modules/dsh-survival-mode/lib/client.js` 存在，且首行就是 `window.__ModuleLoader__.load({`，也就是浏览器模块系统要求的包裹形态。
+- **官方包由 profile 解析**：`@deepseek-ai/dsh-tools` 不在 profile 的 `node_modules/@deepseek-ai/` 下，而是经 `.dsh-module-fallback/node_modules` 解析——所以**不要**把官方包写进 `dependencies`，那会让公开 npm 解析失败。
+
 两个容易踩的坑：
 
 - **`dsh plugin add` 与 `dsh --dump-config` 都不是只读命令。** 前者写 profile 的 `dependencies` 与 `dsh.profile.bundles`，后者会重写 profile 的 `cordis.yml`（`prepareProfile` → `writeFileSync`）。在受限沙箱/只读环境里都会以 `EPERM` 失败——错误信息指向 profile 目录，而不是插件本身。
