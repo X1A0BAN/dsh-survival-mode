@@ -81,6 +81,17 @@ export async function verify() {
   check(patch !== null && patch.includes('insert:'), 'cordis.patch.yml 含 insert 行')
   check(patch !== null && patch.includes(String(manifest.name)), 'cordis.patch.yml 引用了包名')
 
+  // 纯逻辑模块没有任何外部依赖，可以真正 import 进来——这同时是语法校验。
+  // 不用 `node --check` 子进程：受限沙箱会以 EPERM 拒绝 spawn，那会被误读成语法错误。
+  for (const module of ['config.mjs', 'state.mjs']) {
+    try {
+      const loaded = await import(pathToFileURL(resolve(ROOT, 'lib', module)).href)
+      check(Object.keys(loaded).length > 0, 'lib/' + module + ' 可加载且导出成员')
+    } catch (error) {
+      failures.push('lib/' + module + ' 无法加载：' + String(error))
+    }
+  }
+
   // Host 入口：用动态 import 真正加载一次，语法/导出错误在这里就会暴露。
   //
   // Windows 上 import() 只接受 file:// URL，裸盘符路径会报 ERR_UNSUPPORTED_ESM_URL_SCHEME。
@@ -119,6 +130,15 @@ export async function verify() {
     check(bundle.includes('window.__ModuleLoader__.load('), 'client bundle 带 __ModuleLoader__.load 包裹')
     check(bundle.includes('factory: (require) =>'), 'client bundle 使用闭包工厂形态')
     check(/return module\.exports;\s*\}/.test(bundle), 'client bundle 正确返回 module.exports')
+
+    // 模块系统会直接执行这段文本，语法错要到浏览器里才暴露——这里就地编译一次。
+    try {
+      // eslint-disable-next-line no-new-func -- 仅用于编译校验，不执行
+      new Function(bundle)
+      check(true, 'client bundle 语法有效')
+    } catch (error) {
+      failures.push('client bundle 语法错误：' + String(error))
+    }
 
     const requires = [...bundle.matchAll(/require\((['"])([^'"]+)\1\)/g)].map((match) => match[2])
     const allowed = new Set(['react'])
