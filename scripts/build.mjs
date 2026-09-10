@@ -73,7 +73,7 @@ export async function build() {
   // Host 半体是纯 ESM，直接复制（同时把相对导入保持在 src/ 内，lib 只放入口）。
   // lib/ 下的入口需要能 import 到 ../src/*，所以这里复制整棵 src 树。
   await mkdir(resolve(ROOT, 'lib'), { recursive: true })
-  for (const file of ['config.mjs', 'state.mjs', 'index.mjs']) {
+  for (const file of ['config.mjs', 'state.mjs', 'tool.mjs', 'index.mjs']) {
     await copyFile(resolve(ROOT, 'src', file), resolve(ROOT, 'lib', file))
     written.push('lib/' + file)
   }

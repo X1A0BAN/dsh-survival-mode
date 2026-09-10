@@ -114,19 +114,24 @@ dsh plugin --profile web remove dsh-survival-mode
 零运行时依赖，构建与测试只用 Node 内置模块（无 npm install 也能跑）。
 
 ```sh
-node test/host.test.mjs    # 14 个行为测试
-node scripts/build.mjs     # 产出 lib/
-node scripts/verify.mjs    # 产物自检（发布前必跑）
+node test/host.test.mjs          # 14 个状态机行为测试
+node test/host-contract.test.mjs # 用真实的 defineTool 编译工具 schema
+node scripts/build.mjs           # 产出 lib/
+node scripts/verify.mjs          # 产物自检 29 项（发布前必跑）
+npm test                         # 上面两个测试串行跑
 ```
 
 > 用 `node test/host.test.mjs` 而不是 `node --test test/`：后者会为每个测试文件 spawn 子进程，在受限沙箱里会以 `EPERM` 失败。
+
+`host-contract.test.mjs` 会从 DSH 部署目录里找真实的 `@deepseek-ai/dsh-tools`，用它编译本插件的工具定义——`parameters` 根开放性与 `output.schema` 值根必填这两条规则**只有让真正的编译器跑一次才能验证**（本项目在这上面失败过两次）。找不到官方包时该测试会 skip，不会把机器相关路径变成硬失败。
 
 ### 结构
 
 ```
 src/config.mjs         三档预设、边界、食物表
 src/state.mjs          核心状态机（纯逻辑、零依赖，可直接脱离 DSH 测试）
-src/index.mjs          Host 半体：服务、事件钩子、提示词注入、模型工具
+src/tool.mjs           survival_feed 工具定义（接受 defineTool，因此可被真实编译器验证）
+src/index.mjs          Host 半体：服务、事件钩子、提示词注入
 src/client/index.js    客户端半体：shell.overlay 上的 HUD 面板
 scripts/build.mjs      零依赖构建器（包裹 __ModuleLoader__ 闭包工厂）
 scripts/verify.mjs     产物自检
