@@ -1,0 +1,70 @@
+{
+  "name": "dsh-survival-mode",
+  "version": "0.1.0",
+  "description": "生存模式：整个 DSH 全局共享一条饱食度与生命。模型每次思考都消耗饱食度，吃饱了才干活，饿到归零就掉血，血空则全局工具被冻结，只有喂食才能复活。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "survival",
+    "gamification"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.mjs",
+  "exports": {
+    ".": {
+      "default": "./lib/index.mjs"
+    },
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "src",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ],
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=22.19.0",
+    "dsh": ">=0.1.0-rc.5"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "verify": "node scripts/verify.mjs",
+    "test": "node test/host.test.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/X1A0BAN/dsh-survival-mode.git"
+  },
+  "author": "X1A0BAN",
+  "homepage": "https://github.com/X1A0BAN/dsh-survival-mode#readme",
+  "bugs": {
+    "url": "https://github.com/X1A0BAN/dsh-survival-mode/issues"
+  }
+}

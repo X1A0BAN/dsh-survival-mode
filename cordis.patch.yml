@@ -1,0 +1,9 @@
+# dsh-survival-mode 的组合层声明。
+#
+# 这一行把插件的 Host 半体挂进 profile 组合；客户端半体由 package.json 的
+# dsh.client（platform: web）经 exports["./client"] 单独加载，不需要在这里声明。
+#
+# id 与 name 都用包名，便于 `dsh --profile web --dump-config` 里核对挂载结果。
+- insert:
+    - id: dsh-survival-mode
+      name: 'dsh-survival-mode'

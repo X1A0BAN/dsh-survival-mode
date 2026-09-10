@@ -1,0 +1,17 @@
+# 依赖：本插件不需要运行时依赖，官方包由 profile 的 pnpm 闭包在挂载时注入。
+# 只有在本地跑 `npm install`（仅用于让 verify 能解析 @deepseek-ai/dsh-tools）时才会出现。
+node_modules/
+
+# 注意：lib/ 是**构建产物，但必须提交入库** —— 这是刻意的分发选择。
+# `dsh plugin add "github:..."` 不会替用户跑构建，产物入库才能做到"一行安装即可用"。
+# 因此这里不忽略 lib/。
+
+# 编辑器与系统文件
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/
+
+# 与本插件无关的来时文件（dsh-market 的日志导出，不属于本仓库）
+dsh-market-log.txt
