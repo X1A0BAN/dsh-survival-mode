@@ -133,6 +133,26 @@ test('客户端 bundle 能被模块系统加载并导出插件对象', async () 
   assert.equal(typeof plugin.apply, 'function')
 })
 
+test('构建产物里的喂食门槛符合当前规则，旧的防误喂门槛不得回归', async () => {
+  // 面板真正渲染出的禁用状态需要多轮重渲染才能断言，而本文件里的 React 替身撑不住
+  // 多轮重渲染（hook 游标与值的对应会错位），所以这里退一步锁**产物代码**：
+  // 症状本身（饱食度 60/150 时苹果面包按钮全灰）由 host.test.mjs 里那条
+  // "没饱且有货就能喂" 的用例在宿主侧兜住。
+  const source = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8')
+  assert.ok(
+    !source.includes('index !== props.foods.length - 1 && enough'),
+    '旧的「≥2 步余量就禁用苹果面包」门槛回归了：它会让饱食度 60/150 时按钮全灰',
+  )
+  assert.ok(
+    source.includes('food.key === (snapshot.reviveFood'),
+    '复活食物必须由快照的 reviveFood 判定，不能靠食物表的位置猜',
+  )
+  assert.ok(
+    source.includes('snapshot.hunger >= snapshot.maxHunger'),
+    '面板只应在满饱食度时禁用苹果/面包',
+  )
+})
+
 test('apply() 拿到 connection 后会把面板注册到 shell.overlay', async () => {
   const { plugin } = await loadClient()
   const slots = { registrations: [] }

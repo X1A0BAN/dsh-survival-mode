@@ -1,0 +1,6 @@
+url: https://github.com/X1A0BAN/dsh-survival-mode
+name: X1A0BAN/dsh-survival-mode
+category: fun
+description:
+  en: 'Adds a survival layer shared by every dsh session: each model step burns hunger, an empty bar drains health, and once health is gone tool calls are rejected everywhere while conversation keeps working. A panel shows the numbers and feeds the model from a global inventory filled by a small collection minigame, and one survival_feed tool plus two prompt fragments expose the state to the model.'
+  zh: '给整个 dsh 加一层全局共享的生存状态：模型每思考一步扣饱食度，饱食度归零后持续掉血，血空则所有会话的工具调用被拒绝，而对话照常可用；面板显示数值，并从一个全局背包喂食，背包由采集小游戏补充；模型侧通过 survival_feed 工具与两段提示词读取状态。'

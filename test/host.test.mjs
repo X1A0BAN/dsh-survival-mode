@@ -16,7 +16,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { createSurvivalState } from '../src/state.mjs'
-import { GAME, PRESETS } from '../src/config.mjs'
+import { FOODS, GAME, PRESETS, REVIVE } from '../src/config.mjs'
 
 // 断言值一律从 PRESETS 推导，不抄数字：抄写会在调平衡时悄悄失真，
 // 让"测试通过"与"行为正确"脱钩。
@@ -94,23 +94,55 @@ test('掉血 tick 只在饱食度为 0 时生效，并最终导致饿死', () =>
   assert.equal(survival.snapshot().deathCount, 1)
 })
 
-test('喂食恢复饱食度，并在饿死状态下额外复活', () => {
-  // random 恒 0 → 点村民必给面包，用它把面包喂进背包。
-  const survival = createSurvivalState({ preset: 'hard', random: () => 0 })
+test('饿死状态下只有金苹果能复活，且复活要付金苹果的代价', () => {
+  // random 恒 0 → 点村民必给面包、挖金矿必给金锭，用它把材料攒进背包。
+  let nowMs = 0
+  const survival = createSurvivalState({ preset: 'hard', random: () => 0, now: () => nowMs })
   for (let step = 1; step <= 8; step += 1) survival.chargeStep('s1', 1, step)
-  for (let i = 0; i < 7; i += 1) survival.tick()
-  assert.equal(survival.snapshot().dead, true)
+  for (let i = 0; i < 6; i += 1) survival.tick()
+  assert.equal(survival.snapshot().dead, false, '前置：还剩 1 点生命')
+  assert.equal(survival.snapshot().health, 1)
 
   assert.equal(survival.harvest('villager').gained.item, 'bread', '前置：先要到 1 个面包')
-  const result = survival.feed('bread')
-  assert.equal(result.ok, true)
-  assert.equal(result.wasDead, true)
-  const revived = survival.snapshot()
-  assert.equal(revived.dead, false, '喂食应解除饿死')
-  // 面包 +45，复活额外 +60 → 105（上限 80，被夹住）
-  assert.equal(revived.hunger, PRESETS.hard.maxHunger)
-  assert.equal(revived.health, 3, '复活额外 +3 生命')
-  assert.equal(revived.invBread, 0, '喂食应从背包消耗掉这 1 个面包')
+  const eaten = survival.feed('bread')
+  assert.equal(eaten.ok, true)
+  assert.equal(eaten.wasDead, false)
+  const afterBread = survival.snapshot()
+  assert.equal(afterBread.hunger, FOODS.bread.hunger, '面包只回 +45 饱食（困难模式上限 80，不夹）')
+  assert.equal(afterBread.health, 1, '面包不加生命')
+
+  // 再饿死一次（此刻生命 1：归零那一步额外扣 1 点血 → 直接饿死）。
+  for (let step = 9; step <= 16; step += 1) survival.chargeStep('s1', 1, step)
+  assert.equal(survival.snapshot().dead, true, '前置：已饿死')
+
+  assert.equal(survival.snapshot().invBread, 0, '前置：面包已在上一轮吃掉')
+  // 村民有点击冷却，必须把时间推过冷却，否则这次采集会被静默忽略（gained: null）。
+  nowMs += GAME.clickCooldownMs
+  assert.equal(survival.harvest('villager').gained.item, 'bread', '前置：再要到一个面包')
+  const refused = survival.feed('bread')
+  assert.equal(refused.ok, false, '饿死后面包不能复活')
+  assert.ok(refused.message.includes('只有'), '拒绝理由应点明只有金苹果能复活：' + refused.message)
+  assert.equal(survival.snapshot().invBread, 1, '被拒的喂食不能消耗面包')
+  assert.equal(survival.snapshot().dead, true, '被拒的喂食不能改变饿死状态')
+
+  // 攒金苹果：8 块金锭 + 1 个苹果。
+  for (let i = 0; i < 8; i += 1) {
+    survival.harvest('mine')
+    nowMs += GAME.clickCooldownMs
+  }
+  nowMs += GAME.treeIntervalSeconds * 1000
+  survival.harvest('tree')
+  assert.equal(survival.craft('golden_apple').ok, true, '前置：合成出金苹果')
+
+  const revived = survival.feed('golden_apple')
+  assert.equal(revived.ok, true)
+  assert.equal(revived.wasDead, true)
+  const after = survival.snapshot()
+  assert.equal(after.dead, false, '金苹果应解除饿死')
+  // 金苹果 +100、复活额外 +60 → 上限 80；生命 = 食物 +4 与复活 +3 叠加 = 7。
+  assert.equal(after.hunger, PRESETS.hard.maxHunger)
+  assert.equal(after.health, FOODS.golden_apple.hp + REVIVE.hp, '金苹果 +4 生命，复活再 +3')
+  assert.equal(after.invGoldenApple, 0, '复活应消耗掉金苹果')
 })
 
 test('背包为空时喂食被拒绝，状态不被改动', () => {
@@ -122,6 +154,68 @@ test('背包为空时喂食被拒绝，状态不被改动', () => {
   assert.equal(after.hunger, before.hunger, '没货不能白吃')
   assert.equal(after.feedCount, before.feedCount)
   assert.equal(after.invApple, 0)
+})
+
+test('食物与爆率的平衡关系不得被改回去（苹果弱于面包、面包不刷屏）', () => {
+  // 这两条不是"随便定的数"，是经济关系：苹果是树上稳定产出的主力口粮，一旦它追平面包，
+  // 面包与整条金苹果合成链就没有存在意义；村民爆率过高则食物多到让"饿"不再是问题。
+  assert.ok(
+    FOODS.apple.hunger < FOODS.bread.hunger,
+    '苹果饱食必须明显低于面包：苹果 ' + FOODS.apple.hunger + ' vs 面包 ' + FOODS.bread.hunger,
+  )
+  assert.ok(
+    GAME.villagerBreadChance <= 0.3,
+    '村民面包爆率不得超过 0.3，否则每分钟刷出的饱食远超思考消耗：' + GAME.villagerBreadChance,
+  )
+  // 树上苹果的每分钟产出也不能单独养活模型：普通模式每分钟烧 maxHunger/hungerPerStep*… 见 README。
+  const applePerMinute = (60 / GAME.treeIntervalSeconds) * FOODS.apple.hunger
+  assert.ok(
+    applePerMinute < PRESETS.normal.hungerPerStep * 20,
+    '只站着收苹果不该够用：每分钟 ' + applePerMinute + ' 饱食',
+  )
+})
+
+test('饱食度没满且背包有货时喂食被接受（用户报告的"苹果面包用不了"）', () => {
+  let nowMs = 0
+  const survival = createSurvivalState({ preset: 'normal', random: () => 0, now: () => nowMs })
+  nowMs += GAME.treeIntervalSeconds * 1000
+  assert.equal(survival.harvest('tree').gained.item, 'apple', '前置：树上结出 1 个苹果')
+
+  // 只走一步：饱食度只差最后 6 点就是满的——正是旧门槛（≥2 步余量）会禁掉的那种局面。
+  survival.chargeStep('s1', 1, 1)
+  const before = survival.snapshot()
+  assert.equal(before.hunger, PRESETS.normal.maxHunger - PRESETS.normal.hungerPerStep)
+
+  const result = survival.feed('apple')
+  assert.equal(result.ok, true, '没饱且有货就必须能喂，不能被"防误喂"门槛挡住')
+  const after = survival.snapshot()
+  assert.equal(
+    after.hunger,
+    Math.min(PRESETS.normal.maxHunger, before.hunger + FOODS.apple.hunger),
+    '应按苹果数值回饱食（超出上限则夹住）',
+  )
+  assert.equal(after.invApple, 0, '应消耗 1 个苹果')
+  assert.equal(after.feedCount, 1)
+})
+
+test('饱食度与生命都满时喂食被拒绝，不浪费存货', () => {
+  let nowMs = 0
+  const survival = createSurvivalState({ preset: 'normal', random: () => 0, now: () => nowMs })
+  assert.equal(survival.harvest('villager').gained.item, 'bread', '前置：先要到 1 个面包')
+  assert.equal(survival.snapshot().hunger, PRESETS.normal.maxHunger, '前置：饱食度是满的')
+
+  const result = survival.feed('bread')
+  assert.equal(result.ok, false, '满饱食度不应白吃')
+  assert.ok(result.message.includes('浪费'), '拒绝理由应说明是浪费：' + result.message)
+  const after = survival.snapshot()
+  assert.equal(after.invBread, 1, '被拒的喂食不能消耗面包')
+  assert.equal(after.feedCount, 0)
+  assert.equal(after.hunger, PRESETS.normal.maxHunger)
+})
+
+test('快照暴露唯一复活食物的键，供客户端禁用死后无效的按钮', () => {
+  const survival = createSurvivalState({ preset: 'normal' })
+  assert.equal(survival.snapshot().reviveFood, 'golden_apple', '复活食物键必须由快照给出')
 })
 
 test('树定时结苹果：挂满封顶，点击收获全部', () => {
