@@ -13,5 +13,8 @@ Thumbs.db
 .idea/
 .vscode/
 
+# npm pack 打出的 tarball：只作为 GitHub Release 附件分发，不入库
+*.tgz
+
 # 与本插件无关的来时文件（dsh-market 的日志导出，不属于本仓库）
 dsh-market-log.txt
