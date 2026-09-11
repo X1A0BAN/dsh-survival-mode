@@ -19,7 +19,7 @@
 /** RPC 通道名，客户端必须用同一个字符串。 */
 export const CHANNEL = '/dsh-survival-mode'
 
-/** 端点名：一个读状态，一个读静态表，四个写。 */
+/** 端点名：一个读状态，一个读静态表，六个写（喂食/预设/自定义/重置/采集/合成）。 */
 export const ENDPOINTS = {
   snapshot: 'snapshot',
   meta: 'meta',
@@ -27,6 +27,8 @@ export const ENDPOINTS = {
   preset: 'preset',
   configure: 'configure',
   reset: 'reset',
+  harvest: 'harvest',
+  craft: 'craft',
 }
 
 /**
@@ -69,10 +71,12 @@ export function createHostHandler(survival, meta) {
         case ENDPOINTS.snapshot:
           return ok(survival.snapshot())
         case ENDPOINTS.meta:
-          // 预设数值与食物表只有宿主一份真值，客户端不复制，避免两处漂移。
+          // 预设数值、食物表与小游戏数值只有宿主一份真值，客户端不复制，避免两处漂移。
           return ok({
             presets: Array.isArray(tables.presets) ? tables.presets : [],
             foods: Array.isArray(tables.foods) ? tables.foods : [],
+            game: tables.game !== null && typeof tables.game === 'object' ? tables.game : null,
+            recipes: tables.recipes !== null && typeof tables.recipes === 'object' ? tables.recipes : {},
           })
         case ENDPOINTS.feed: {
           if (typeof body.food !== 'string' || body.food === '') {
@@ -96,6 +100,20 @@ export function createHostHandler(survival, meta) {
         }
         case ENDPOINTS.reset: {
           const result = survival.reset()
+          return ok({ result, snapshot: survival.snapshot() })
+        }
+        case ENDPOINTS.harvest: {
+          if (typeof body.source !== 'string' || body.source === '') {
+            return fail('survival-mode/bad-request', 'harvest 需要字符串 source')
+          }
+          const result = survival.harvest(body.source)
+          return ok({ result, snapshot: survival.snapshot() })
+        }
+        case ENDPOINTS.craft: {
+          if (typeof body.recipe !== 'string' || body.recipe === '') {
+            return fail('survival-mode/bad-request', 'craft 需要字符串 recipe')
+          }
+          const result = survival.craft(body.recipe)
           return ok({ result, snapshot: survival.snapshot() })
         }
         default:
@@ -149,4 +167,6 @@ export const WRITE_FIELDS = {
   feed: 'food',
   preset: 'id',
   configure: 'patch',
+  harvest: 'source',
+  craft: 'recipe',
 }

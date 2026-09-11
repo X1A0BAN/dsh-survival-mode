@@ -30,7 +30,8 @@ export function createFeedTool(defineTool, deps) {
     description: '生存模式（全局共享）：进食恢复饱食度，影响整个 DSH 的所有会话。'
       + '可选：' + foods.map((food) => food.key + '=' + food.label + '(+' + food.hunger + ' 饱食'
         + (food.hp > 0 ? '/+' + food.hp + ' 生命' : '') + ')').join('，') + '。'
-      + '通常由用户在面板上喂食；仅当用户在对话中明确要求你进食时才调用。',
+      + '食物从全局背包消耗，背包由 MC 小游戏（采苹果/找村民/挖金矿/工作台合成）补充；'
+      + '背包没有存货时进食会失败。通常由用户在面板上喂食；仅当用户在对话中明确要求你进食时才调用。',
     parameters: {
       food: {
         type: 'string',

@@ -45,6 +45,14 @@ function fakeSurvival() {
       calls.push(['reset'])
       return { ok: true, message: '已重置' }
     },
+    harvest: (source) => {
+      calls.push(['harvest', source])
+      return { ok: true, gained: { item: 'bread', count: 1 }, message: '村民送了你 1 个面包！' }
+    },
+    craft: (recipe) => {
+      calls.push(['craft', recipe])
+      return { ok: true, gained: { item: 'golden_apple', count: 1 }, message: '合成成功：金苹果 ×1！' }
+    },
   }
 }
 
@@ -64,19 +72,21 @@ test('宿主 handler 覆盖每个端点，信封形状符合传输层约定', as
   assert.equal(meta.value.presets.length, 1)
   assert.equal(meta.value.foods[0].key, 'apple')
 
-  // 四个写操作都要回传最新快照，客户端据此立即刷新而不必等下一次轮询。
+  // 六个写操作都要回传最新快照，客户端据此立即刷新而不必等下一次轮询。
   for (const [endpoint, payload] of [
     [ENDPOINTS.feed, { [WRITE_FIELDS.feed]: 'apple' }],
     [ENDPOINTS.preset, { [WRITE_FIELDS.preset]: 'hard' }],
     [ENDPOINTS.configure, { [WRITE_FIELDS.configure]: { tickSeconds: 1 } }],
     [ENDPOINTS.reset, {}],
+    [ENDPOINTS.harvest, { [WRITE_FIELDS.harvest]: 'villager' }],
+    [ENDPOINTS.craft, { [WRITE_FIELDS.craft]: 'golden_apple' }],
   ]) {
     const response = await handle(endpoint, payload)
     assert.equal(response.ok, true, endpoint + ' 应该成功')
     assert.ok(response.value.snapshot, endpoint + ' 应回传 snapshot')
     assert.ok(response.value.result, endpoint + ' 应回传 result')
   }
-  assert.deepEqual(survival.calls.map((c) => c[0]), ['feed', 'preset', 'configure', 'reset'])
+  assert.deepEqual(survival.calls.map((c) => c[0]), ['feed', 'preset', 'configure', 'reset', 'harvest', 'craft'])
 })
 
 test('写操作字段名与宿主读取的字段端到端对齐', async () => {
@@ -87,7 +97,9 @@ test('写操作字段名与宿主读取的字段端到端对齐', async () => {
   assert.equal((await handle(ENDPOINTS.feed, { [WRITE_FIELDS.feed]: 'apple' })).ok, true)
   assert.equal((await handle(ENDPOINTS.preset, { [WRITE_FIELDS.preset]: 'hard' })).ok, true)
   assert.equal((await handle(ENDPOINTS.configure, { [WRITE_FIELDS.configure]: { tickSeconds: 2 } })).ok, true)
-  assert.deepEqual(survival.calls.map((c) => c[0]), ['feed', 'preset', 'configure'])
+  assert.equal((await handle(ENDPOINTS.harvest, { [WRITE_FIELDS.harvest]: 'mine' })).ok, true)
+  assert.equal((await handle(ENDPOINTS.craft, { [WRITE_FIELDS.craft]: 'golden_apple' })).ok, true)
+  assert.deepEqual(survival.calls.map((c) => c[0]), ['feed', 'preset', 'configure', 'harvest', 'craft'])
 })
 
 test('非法入参返回失败信封而不是抛出', async () => {
@@ -96,6 +108,8 @@ test('非法入参返回失败信封而不是抛出', async () => {
     [ENDPOINTS.feed, {}],
     [ENDPOINTS.feed, { [WRITE_FIELDS.feed]: '' }],
     [ENDPOINTS.preset, {}],
+    [ENDPOINTS.harvest, {}],
+    [ENDPOINTS.craft, { [WRITE_FIELDS.craft]: '' }],
     ['nope', {}],
   ]) {
     const response = await handle(endpoint, payload)

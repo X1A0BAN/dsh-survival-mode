@@ -16,7 +16,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { createSurvivalState } from '../src/state.mjs'
-import { PRESETS } from '../src/config.mjs'
+import { GAME, PRESETS } from '../src/config.mjs'
 
 // 断言值一律从 PRESETS 推导，不抄数字：抄写会在调平衡时悄悄失真，
 // 让"测试通过"与"行为正确"脱钩。
@@ -95,19 +95,111 @@ test('掉血 tick 只在饱食度为 0 时生效，并最终导致饿死', () =>
 })
 
 test('喂食恢复饱食度，并在饿死状态下额外复活', () => {
-  const survival = createSurvivalState({ preset: 'hard' })
+  // random 恒 0 → 点村民必给面包，用它把面包喂进背包。
+  const survival = createSurvivalState({ preset: 'hard', random: () => 0 })
   for (let step = 1; step <= 8; step += 1) survival.chargeStep('s1', 1, step)
   for (let i = 0; i < 7; i += 1) survival.tick()
   assert.equal(survival.snapshot().dead, true)
 
-  const result = survival.feed('apple')
+  assert.equal(survival.harvest('villager').gained.item, 'bread', '前置：先要到 1 个面包')
+  const result = survival.feed('bread')
   assert.equal(result.ok, true)
   assert.equal(result.wasDead, true)
   const revived = survival.snapshot()
   assert.equal(revived.dead, false, '喂食应解除饿死')
-  // 苹果 +25，复活额外 +60 → 85（上限 80，被夹住）
-  assert.equal(revived.hunger, 80)
+  // 面包 +45，复活额外 +60 → 105（上限 80，被夹住）
+  assert.equal(revived.hunger, PRESETS.hard.maxHunger)
   assert.equal(revived.health, 3, '复活额外 +3 生命')
+  assert.equal(revived.invBread, 0, '喂食应从背包消耗掉这 1 个面包')
+})
+
+test('背包为空时喂食被拒绝，状态不被改动', () => {
+  const survival = createSurvivalState({ preset: 'normal' })
+  const before = survival.snapshot()
+  const result = survival.feed('apple')
+  assert.equal(result.ok, false)
+  const after = survival.snapshot()
+  assert.equal(after.hunger, before.hunger, '没货不能白吃')
+  assert.equal(after.feedCount, before.feedCount)
+  assert.equal(after.invApple, 0)
+})
+
+test('树定时结苹果：挂满封顶，点击收获全部', () => {
+  let nowMs = 0
+  const survival = createSurvivalState({ preset: 'normal', now: () => nowMs })
+  assert.equal(survival.harvest('tree').gained, null, '刚开始树上没有苹果')
+
+  nowMs += GAME.treeIntervalSeconds * 1000
+  assert.equal(survival.snapshot().treeReady, 1, '到点应结出 1 个')
+
+  nowMs += GAME.treeIntervalSeconds * 1000 * 10
+  assert.equal(survival.snapshot().treeReady, GAME.treeMaxReady, '挂满后不再继续结')
+
+  const collected = survival.harvest('tree')
+  assert.equal(collected.gained.item, 'apple')
+  assert.equal(collected.gained.count, GAME.treeMaxReady)
+  assert.equal(survival.snapshot().invApple, GAME.treeMaxReady)
+  assert.equal(survival.snapshot().treeReady, 0, '收走后树重新开始计时')
+})
+
+test('村民概率给面包，金矿小概率给金锭', () => {
+  const lucky = createSurvivalState({ preset: 'normal', random: () => 0 })
+  assert.equal(lucky.harvest('villager').gained.item, 'bread')
+  assert.equal(lucky.harvest('mine').gained.item, 'gold_ingot')
+  assert.equal(lucky.snapshot().invBread, 1)
+  assert.equal(lucky.snapshot().invGoldIngot, 1)
+
+  const unlucky = createSurvivalState({ preset: 'normal', random: () => 0.999 })
+  assert.equal(unlucky.harvest('villager').gained, null)
+  assert.equal(unlucky.harvest('mine').gained, null)
+  assert.equal(unlucky.snapshot().invBread, 0)
+  assert.equal(unlucky.snapshot().invGoldIngot, 0)
+
+  assert.equal(unlucky.harvest('nope').ok, false, '未知采集点应被拒绝')
+})
+
+test('村民和金矿有点击冷却：冷却内静默忽略，冷却结束后恢复', () => {
+  let nowMs = 0
+  const survival = createSurvivalState({ preset: 'normal', random: () => 0, now: () => nowMs })
+
+  const first = survival.harvest('villager')
+  assert.equal(first.gained.item, 'bread', '首次点击正常结算')
+
+  const spam = survival.harvest('villager')
+  assert.equal(spam.gained, null, '冷却内的点击不给东西')
+  assert.equal(spam.message, null, '冷却内的点击静默处理')
+  assert.equal(survival.snapshot().invBread, 1, '冷却内的点击不入账')
+
+  assert.equal(survival.harvest('mine').gained.item, 'gold_ingot', '金矿与村民冷却互相独立')
+
+  nowMs += GAME.clickCooldownMs
+  assert.equal(survival.harvest('villager').gained.item, 'bread', '冷却结束后恢复')
+
+  assert.equal(survival.harvest('tree').gained, null, '树不受点击冷却限制（只是还没结果）')
+})
+
+test('工作台合成：8 金锭 + 1 苹果 → 1 金苹果，材料不足被拒绝', () => {
+  let nowMs = 0
+  const survival = createSurvivalState({ preset: 'normal', random: () => 0, now: () => nowMs })
+  assert.equal(survival.craft('golden_apple').ok, false, '空背包不能合成')
+
+  // 攒材料：挖 8 次金矿（random 恒 0 必中；每次推进时间以避开点击冷却），树结 1 个苹果。
+  for (let i = 0; i < 8; i += 1) {
+    survival.harvest('mine')
+    nowMs += GAME.clickCooldownMs
+  }
+  nowMs += GAME.treeIntervalSeconds * 1000
+  survival.harvest('tree')
+
+  const result = survival.craft('golden_apple')
+  assert.equal(result.ok, true)
+  const after = survival.snapshot()
+  assert.equal(after.invGoldenApple, 1)
+  assert.equal(after.invGoldIngot, 0, '8 块金锭应全部被消耗')
+  assert.equal(after.invApple, 0, '1 个苹果应被消耗')
+
+  assert.equal(survival.craft('golden_apple').ok, false, '材料用完后不能再合成')
+  assert.equal(survival.craft('nope').ok, false, '未知配方应被拒绝')
 })
 
 test('用户消息抢救能解除饿死，保证不会被锁在会话外', () => {

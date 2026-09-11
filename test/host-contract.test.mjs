@@ -66,7 +66,8 @@ test('survival_feed 工具定义能被真实的 defineTool 编译', async (t) =>
     '值根必须显式声明 additionalProperties')
 
   // 执行一次，确认返回值满足 output.schema 的形状（四个字段都要在）。
-  const value = await tool.execute({ food: 'steak' }, {})
+  // 背包为空时进食会失败，但返回值形状不变——这正是这里要核对的。
+  const value = await tool.execute({ food: 'apple' }, {})
   for (const key of ['eat', 'hunger', 'health', 'dead']) {
     assert.notEqual(value[key], undefined, '工具返回值缺少字段 ' + key)
   }

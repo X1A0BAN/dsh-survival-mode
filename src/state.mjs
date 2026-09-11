@@ -22,10 +22,14 @@ import {
   CRITICAL_RATIO,
   DEFAULT_PRESET,
   FOODS,
+  GAME,
   HP_LOSS_PER_TICK,
+  ITEMS,
+  ITEM_LABELS,
   LIMITS,
   PRESETS,
   PRESET_LABELS,
+  RECIPES,
   REVIVE,
   STARVE_PENALTY,
   clamp,
@@ -34,11 +38,14 @@ import {
 
 /**
  * 创建一份全局生存状态。
- * @param options 可选的初始预设与日志函数。
+ * @param options 可选的初始预设、日志函数，以及测试用的 random/now 注入。
  * @returns 状态机的读写接口。
  */
 export function createSurvivalState(options = {}) {
   const log = typeof options.log === 'function' ? options.log : () => {}
+  // 随机源与时间源都可注入：小游戏的概率掉落与树的定时生长必须能在测试里复现。
+  const random = typeof options.random === 'function' ? options.random : Math.random
+  const now = typeof options.now === 'function' ? options.now : () => Date.now()
   const preset = PRESETS[options.preset] === undefined ? DEFAULT_PRESET : options.preset
   const initial = PRESETS[preset]
 
@@ -63,6 +70,39 @@ export function createSurvivalState(options = {}) {
     deathCount: 0,
     rescueCount: 0,
     lastAgentId: null,
+  }
+
+  /**
+   * 全局背包。食物必须先入包才能喂，金锭是合成金苹果的材料。
+   * 键集合固定为 config.ITEMS，快照按同一键集展开成标量字段。
+   */
+  const inventory = {}
+  for (const item of ITEMS) inventory[item] = 0
+
+  /**
+   * 苹果树的生长簿记：ready 是已结出、待收获的个数；lastGrow 是上一颗
+   * 开始生长（或挂满/被收获）的时间戳。树的推进是惰性的——只在 snapshot
+   * 与收获时按 now() 结算，不占用定时器。
+   */
+  const tree = { ready: 0, lastGrow: now() }
+
+  /** 村民/金矿的上次点击时间（点击冷却用；-Infinity 保证首次点击必生效）。 */
+  const lastClickAt = { villager: Number.NEGATIVE_INFINITY, mine: Number.NEGATIVE_INFINITY }
+  const treeIntervalMs = GAME.treeIntervalSeconds * 1000
+
+  /** 按当前时间结算树上新结出的苹果；挂满后计时归零，收走后重新计时。 */
+  function refreshTree() {
+    const nowMs = now()
+    if (tree.ready >= GAME.treeMaxReady) {
+      tree.lastGrow = nowMs
+      return
+    }
+    const grown = Math.floor((nowMs - tree.lastGrow) / treeIntervalMs)
+    if (grown <= 0) return
+    tree.ready = Math.min(GAME.treeMaxReady, tree.ready + grown)
+    tree.lastGrow = tree.ready >= GAME.treeMaxReady
+      ? nowMs
+      : tree.lastGrow + grown * treeIntervalMs
   }
 
   /**
@@ -148,15 +188,22 @@ export function createSurvivalState(options = {}) {
     },
 
     /**
-     * 喂食。饿死状态下任意食物都会额外复活。
-     * @param food 食物键（apple / steak / golden_carrot）。
-     * @returns 结果对象；未知食物返回 ok: false。
+     * 喂食：从背包消耗 1 个对应食物。饿死状态下任意食物都会额外复活。
+     * @param food 食物键（apple / bread / golden_apple）。
+     * @returns 结果对象；未知食物或背包没有存货返回 ok: false。
      */
     feed(food) {
       const spec = FOODS[food]
       if (spec === undefined) {
         return { ok: false, message: '未知的食物：' + String(food) }
       }
+      if (inventory[food] <= 0) {
+        return {
+          ok: false,
+          message: '背包里没有' + spec.label + '了：去 MC 小游戏里采集或合成，再来喂食。',
+        }
+      }
+      inventory[food] -= 1
       const wasDead = state.dead
       state.hunger = clamp(state.hunger + spec.hunger, 0, config.maxHunger)
       state.health = clamp(state.health + spec.hp, 0, config.maxHealth)
@@ -175,6 +222,85 @@ export function createSurvivalState(options = {}) {
           + spec.emoji + ' ' + spec.label + ' 已送达，饱食度 +' + spec.hunger
           + (spec.hp > 0 ? '，生命 +' + spec.hp : '') + '。',
       }
+    },
+
+    /**
+     * MC 小游戏的采集动作。概率与树的生长数值都在 config.GAME。
+     * @param source 采集点：'tree'（收树上全部苹果）/ 'villager'（村民概率给面包）/
+     *   'mine'（金矿小概率给金锭）。
+     * @returns 结果对象；gained 是本次入包的物品（{ item, count }），没收获为 null。
+     */
+    harvest(source) {
+      if (source === 'tree') {
+        refreshTree()
+        if (tree.ready <= 0) {
+          return { ok: true, gained: null, message: '树上的苹果还没结出来，过一会儿再来。' }
+        }
+        const count = tree.ready
+        tree.ready = 0
+        tree.lastGrow = now()
+        inventory.apple += count
+        notify()
+        return {
+          ok: true,
+          gained: { item: 'apple', count },
+          message: '从树上收获了 ' + count + ' 个苹果。',
+        }
+      }
+      if (source === 'villager' || source === 'mine') {
+        // 点击冷却：冷却期内的点击直接忽略（不算 ok:false 错误，只是没反应）。
+        const since = now() - lastClickAt[source]
+        if (since < GAME.clickCooldownMs) {
+          return { ok: true, gained: null, message: null }
+        }
+        lastClickAt[source] = now()
+      }
+      if (source === 'villager') {
+        if (random() < GAME.villagerBreadChance) {
+          inventory.bread += 1
+          notify()
+          return { ok: true, gained: { item: 'bread', count: 1 }, message: '村民送了你 1 个面包！' }
+        }
+        return { ok: true, gained: null, message: '村民摇了摇头，什么也没给你。' }
+      }
+      if (source === 'mine') {
+        if (random() < GAME.mineGoldChance) {
+          inventory.gold_ingot += 1
+          notify()
+          return { ok: true, gained: { item: 'gold_ingot', count: 1 }, message: '挖到了 1 块金锭！' }
+        }
+        return { ok: true, gained: null, message: '只挖到一堆圆石……' }
+      }
+      return { ok: false, gained: null, message: '未知的采集点：' + String(source) }
+    },
+
+    /**
+     * 工作台合成。目前唯一配方：8 块金锭 + 1 个苹果 → 1 个金苹果。
+     * @param recipe 配方键（golden_apple）。
+     * @returns 结果对象；材料不足返回 ok: false。
+     */
+    craft(recipe) {
+      const spec = RECIPES[recipe]
+      if (spec === undefined) {
+        return { ok: false, message: '未知的配方：' + String(recipe) }
+      }
+      const missing = Object.entries(spec.needs)
+        .filter(([item, count]) => inventory[item] < count)
+        .map(([item]) => item)
+      if (missing.length > 0) {
+        return {
+          ok: false,
+          message: '材料不足：合成' + spec.label + '需要 '
+            + Object.entries(spec.needs)
+              .map(([item, count]) => String(count) + ' 个' + (ITEM_LABELS[item] ?? String(item)))
+              .join(' + ')
+            + '。',
+        }
+      }
+      for (const [item, count] of Object.entries(spec.needs)) inventory[item] -= count
+      inventory[spec.gives] += 1
+      notify()
+      return { ok: true, gained: { item: spec.gives, count: 1 }, message: '合成成功：' + spec.label + ' ×1！' }
     },
 
     /**
@@ -281,14 +407,29 @@ export function createSurvivalState(options = {}) {
     /**
      * 供浏览器面板与提示词读取的只读快照。
      *
-     * 只暴露标量，绝不把内部对象引用交出去。
+     * 只暴露标量，绝不把内部对象引用交出去：背包按固定键集展开成
+     * invApple / invBread / invGoldenApple / invGoldIngot，树的状态展开成
+     * treeReady / treeNextIn。
+     *
+     * 注意：snapshot 会顺手结算树的生长（惰性推进见 refreshTree），
+     * 因此面板轮询 snapshot 即可看到苹果一个个结出来，不需要额外定时器。
      * @returns 面板所需的全部字段。
      */
     snapshot() {
+      refreshTree()
       const hunger = Math.round(state.hunger)
       const health = Math.round(state.health)
       const starving = !state.dead && state.hunger <= 0
       return {
+        invApple: inventory.apple,
+        invBread: inventory.bread,
+        invGoldenApple: inventory.golden_apple,
+        invGoldIngot: inventory.gold_ingot,
+        treeReady: tree.ready,
+        treeNextIn: tree.ready >= GAME.treeMaxReady
+          ? null
+          : Math.max(1, Math.ceil((treeIntervalMs - (now() - tree.lastGrow)) / 1000)),
+        clickCooldownMs: GAME.clickCooldownMs,
         hasState: true,
         preset: config.preset,
         hunger,
