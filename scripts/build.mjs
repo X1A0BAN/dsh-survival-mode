@@ -25,14 +25,26 @@ const ALLOWED_CLIENT_REQUIRES = new Set(['react'])
  * 把客户端源码包成模块表闭包工厂。
  * @param id 包名，写进 load() 的 id。
  * @param source src/client/index.js 的内容。
+ * @param constants 构建期注入的跨面常量：channel、endpoints 与 writeFields。
  * @returns 可直接被模块系统执行的 CJS 文本。
  */
-export function wrapClientBundle(id, source) {
+export function wrapClientBundle(id, source, constants = { channel: '', endpoints: {}, writeFields: {} }) {
   // 只接受 `export default X` 这一种导出：其它 ESM 语法需要真正的转译器，
   // 与其半吊子支持，不如明确拒绝。
   const stripped = source.replace(/^export default\s/m, 'module.exports = ')
   if (/^\s*(import|export)\s/m.test(stripped)) {
     throw new Error('src/client/index.js 只允许 `export default`；其余 import/export 需要真正的打包器')
+  }
+
+  // 跨面常量由构建期从 bridge.mjs 注入：两端共用一个真值来源，不靠人肉同步。
+  const injected = stripped.replace(
+    /^const INJECTED = .*$/m,
+    'const RPC_CHANNEL = ' + JSON.stringify(constants.channel) + ';\n'
+    + 'const RPC_ENDPOINTS = ' + JSON.stringify(constants.endpoints) + ';\n'
+    + 'const RPC_WRITE_FIELDS = ' + JSON.stringify(constants.writeFields) + ';',
+  )
+  if (injected === stripped) {
+    throw new Error('src/client/index.js 缺少 `const INJECTED = …` 占位行：跨面常量无法注入')
   }
 
   const requires = [...source.matchAll(/require\((['"])([^'"]+)\1\)/g)].map((match) => match[2])
@@ -51,7 +63,7 @@ export function wrapClientBundle(id, source) {
     '  id: ' + JSON.stringify(id) + ',',
     '  factory: (require) => {',
     'var module = { exports: {} }; var exports = module.exports;',
-    stripped,
+    injected,
     'return module.exports;',
     '  },',
     '});',
@@ -73,17 +85,55 @@ export async function build() {
   // Host 半体是纯 ESM，直接复制（同时把相对导入保持在 src/ 内，lib 只放入口）。
   // lib/ 下的入口需要能 import 到 ../src/*，所以这里复制整棵 src 树。
   await mkdir(resolve(ROOT, 'lib'), { recursive: true })
-  for (const file of ['config.mjs', 'state.mjs', 'tool.mjs', 'index.mjs']) {
+  for (const file of ['config.mjs', 'state.mjs', 'tool.mjs', 'bridge.mjs', 'index.mjs']) {
     await copyFile(resolve(ROOT, 'src', file), resolve(ROOT, 'lib', file))
     written.push('lib/' + file)
   }
 
   const clientSource = await readFile(resolve(ROOT, 'src', 'client', 'index.js'), 'utf8')
-  const bundle = wrapClientBundle(id, clientSource)
+  // 跨面常量在构建期从 bridge.mjs 注入，避免两端各写一份而悄悄漂移。
+  const bridgeSource = await readFile(resolve(ROOT, 'src', 'bridge.mjs'), 'utf8')
+  const bundle = wrapClientBundle(id, clientSource, {
+    channel: readStringConst(bridgeSource, 'CHANNEL'),
+    endpoints: readObjectConst(bridgeSource, 'ENDPOINTS'),
+    writeFields: readObjectConst(bridgeSource, 'WRITE_FIELDS'),
+  })
   await writeFile(resolve(ROOT, 'lib', 'client.js'), bundle, 'utf8')
   written.push('lib/client.js')
 
   return written
+}
+
+/**
+ * 从 bridge.mjs 源码里读一个字符串常量。
+ *
+ * 用正则而非 import：bridge.mjs 是 ESM，而 build.mjs 想保持零依赖、也不想在
+ * 构建期执行被测源码。
+ *
+ * @param source bridge.mjs 内容。
+ * @param name 常量名。
+ * @returns 常量值。
+ */
+function readStringConst(source, name) {
+  const match = new RegExp('export const ' + name + " = '([^']*)'").exec(source)
+  if (match === null) throw new Error('build: bridge.mjs 里找不到字符串常量 ' + name)
+  return match[1]
+}
+
+/**
+ * 从 bridge.mjs 源码里读一个字符串对象常量（`{ a: 'b', … }` 形状）。
+ *
+ * @param source bridge.mjs 内容。
+ * @param name 常量名。
+ * @returns 常量对象。
+ */
+function readObjectConst(source, name) {
+  const block = new RegExp('export const ' + name + ' = \\{([\\s\\S]*?)\\}').exec(source)
+  if (block === null) throw new Error('build: bridge.mjs 里找不到对象常量 ' + name)
+  const result = {}
+  for (const [, key, value] of block[1].matchAll(/([A-Za-z0-9_]+)\s*:\s*'([^']*)'/g)) result[key] = value
+  if (Object.keys(result).length === 0) throw new Error('build: 对象常量 ' + name + ' 里没解析出字段')
+  return result
 }
 
 const invokedDirectly = process.argv[1] !== undefined

@@ -67,6 +67,116 @@ const CSS = [
 /** 面板刷新间隔：状态变化只由服务通知驱动会漏掉掉血 tick，轮询最稳。 */
 const POLL_MS = 700
 
+/** 向宿主拉取状态的间隔。比 POLL_MS 慢，因为面板读的是本地缓存。 */
+const RPC_POLL_MS = 1000
+
+/**
+ * 构建期从 src/bridge.mjs 注入的跨面常量。**这行必须原样保留**：
+ * scripts/build.mjs 用正则匹配这一行并替换成真实的 RPC_CHANNEL / RPC_ENDPOINTS，
+ * 两端因此共用同一个真值来源，不会各写一份悄悄漂移。
+ */
+const INJECTED = null
+
+/**
+ * 尚无数据时的占位快照。
+ *
+ * 数值取 normal 预设，字段与宿主 state.snapshot() 对齐：面板首帧需要每个字段都
+ * 存在，否则读取 undefined 会直接白屏。这只是占位，第一次 refresh 就会覆盖它。
+ */
+const FALLBACK_SNAPSHOT = {
+  hunger: 150,
+  maxHunger: 150,
+  health: 12,
+  maxHealth: 12,
+  hungerPerStep: 6,
+  tickSeconds: 4,
+  stepCount: 0,
+  deathCount: 0,
+  dead: false,
+  starving: false,
+  critical: false,
+  preset: 'normal',
+  secondsToDeath: null,
+  hungerPercent: 100,
+  reviveHunger: 60,
+}
+
+/**
+ * 造客户端侧的生存服务适配器。
+ *
+ * UI 组件要的是**同步**的 snapshot()/onChange()，而 RPC 是异步的。这个适配器用
+ * 一份本地缓存桥接两者：refresh 与写操作都会刷新缓存并通知订阅者，于是组件代码
+ * 不需要感知 RPC 的异步性。
+ *
+ * @param deps call（connection.rpc.call 的绑定版）与 fallback 占位快照。
+ * @returns 与宿主 service 同形的适配器。
+ */
+function createClientService(deps) {
+  const call = deps.call
+  let cache = deps.fallback
+  const listeners = new Set()
+
+  /** 缓存新快照并通知订阅者；单个订阅者抛错不影响其它订阅者。 */
+  function publish(next) {
+    if (next === null || typeof next !== 'object') return
+    cache = next
+    listeners.forEach((listener) => {
+      try {
+        listener(cache)
+      } catch (error) {
+        console.warn('dsh-survival-mode: listener failed', error)
+      }
+    })
+  }
+
+  /** 发一次 RPC 并解包 { ok, value } / { ok, error } 信封。 */
+  async function invoke(endpoint, payload) {
+    const response = await call(RPC_CHANNEL, endpoint, payload === undefined ? {} : payload)
+    if (response === null || typeof response !== 'object') {
+      throw new Error('survival-mode: 响应形状非法')
+    }
+    if (response.ok !== true) {
+      const envelope = response.error
+      const message = envelope !== null && typeof envelope === 'object' ? envelope.message : undefined
+      throw new Error(typeof message === 'string' ? message : 'survival-mode: rpc 失败')
+    }
+    return response.value
+  }
+
+  return {
+    snapshot: () => cache,
+    onChange(listener) {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    /** 拉一次最新状态；任何失败都保持上一份缓存，绝不抛出。 */
+    async refresh() {
+      try {
+        publish(await invoke(RPC_ENDPOINTS.snapshot, {}))
+      } catch {
+        // 断线时保持旧数据，面板不白屏。
+      }
+    },
+    /** 写操作：成功后用响应附带的最新快照刷新缓存，并返回 result 供 UI 提示。 */
+    async mutate(endpoint, payload) {
+      const value = await invoke(endpoint, payload)
+      if (value !== null && typeof value === 'object' && value.snapshot !== undefined) {
+        publish(value.snapshot)
+      }
+      return value !== null && typeof value === 'object' ? value.result : value
+    },
+  }
+}
+
+/** 三个写操作 + reset：端点名与请求体字段名都由构建期从 bridge.mjs 注入。 */
+function withMutations(service) {
+  service.feed = (food) => service.mutate(RPC_ENDPOINTS.feed, { [RPC_WRITE_FIELDS.feed]: food })
+  service.preset = (id) => service.mutate(RPC_ENDPOINTS.preset, { [RPC_WRITE_FIELDS.preset]: id })
+  service.configure = (patch) => service.mutate(RPC_ENDPOINTS.configure, { [RPC_WRITE_FIELDS.configure]: patch })
+  service.reset = () => service.mutate(RPC_ENDPOINTS.reset, {})
+  return service
+}
+
 /**
  * 注入面板样式。样式随客户端 run 一起回收。
  * @returns 移除样式标签的函数。
@@ -94,6 +204,51 @@ function bar(percent, color, lowColor) {
       style: { width: percent + '%', background: percent <= 25 ? lowColor : color },
     }),
   )
+}
+
+/** 发一次只读 RPC 并解包信封；失败返回 null。 */
+async function invokeMeta(call) {
+  try {
+    const response = await call(RPC_CHANNEL, RPC_ENDPOINTS.meta, {})
+    if (response === null || typeof response !== 'object' || response.ok !== true) return null
+    return response.value
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 面板宿主壳：异步取回预设与食物表后渲染真正的面板。
+ *
+ * 为什么要有这一层：预设数值与食物表由宿主 RPC 提供，而 hooks 只能写在组件里，
+ * 不能在 apply() 里调用。取表失败时返回 null——宁可不出面板，也不出一个
+ * 连喂食按钮都没有的半截 UI。
+ *
+ * @param props service（状态适配器）与 call（connection.rpc.call 绑定版）。
+ */
+function SurvivalPanelHost(props) {
+  const [meta, setMeta] = React.useState(null)
+
+  React.useEffect(() => {
+    let alive = true
+    void invokeMeta(props.call).then((value) => {
+      if (!alive || value === null || typeof value !== 'object') return
+      setMeta({
+        presets: Array.isArray(value.presets) ? value.presets : [],
+        foods: Array.isArray(value.foods) ? value.foods : [],
+      })
+    })
+    return () => {
+      alive = false
+    }
+  }, [props.call])
+
+  if (meta === null) return null
+  return React.createElement(SurvivalPanel, {
+    service: props.service,
+    presets: meta.presets,
+    foods: meta.foods,
+  })
 }
 
 /**
@@ -133,36 +288,43 @@ function SurvivalPanel(props) {
     return () => clearTimeout(timer)
   }, [toast])
 
-  /** 把一次操作结果合并进面板状态。 */
-  function settle(result) {
-    if (result === null || result === undefined) return
-    setSnapshot(service.snapshot())
-    if (typeof result.message === 'string') setToast(result.message)
+  /**
+   * 把一次异步操作结果合并进面板状态。
+   *
+   * RPC 是异步的，而 service.snapshot() 读的是适配器里的本地缓存——写操作完成后
+   * 缓存已被刷新，所以这里同步重读即可拿到新值。失败时用 toast 说明原因，
+   * 绝不抛出（面板不该因一次 RPC 失败而崩掉）。
+   *
+   * @param run 返回 Promise 的操作。
+   */
+  async function settle(run) {
+    try {
+      const result = await run
+      if (result !== null && result !== undefined && typeof result.message === 'string') {
+        setToast(result.message)
+      }
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSnapshot(service.snapshot())
+    }
   }
 
   function doFeed(food) {
     if (busy) return
     setBusy(true)
-    try {
-      settle(service.feed(food))
-    } finally {
-      setBusy(false)
-    }
+    void settle(service.feed(food)).finally(() => setBusy(false))
   }
 
   function choosePreset(id) {
     if (busy) return
     setBusy(true)
-    try {
-      settle(service.preset(id))
-    } finally {
-      setBusy(false)
-    }
+    void settle(service.preset(id)).finally(() => setBusy(false))
   }
 
   function saveConfig() {
     if (form === null) return
-    settle(service.configure({
+    void settle(service.configure({
       hungerPerStep: Number(form.step),
       maxHunger: Number(form.hunger),
       maxHealth: Number(form.health),
@@ -336,7 +498,12 @@ function SurvivalPanel(props) {
 /**
  * 客户端插件：把面板挂到 shell.overlay 上。
  *
- * `slots` 是硬依赖：它在槽声明期做等待，声明就绪后再注册，因此必须 inject。
+ * 关键：面板跑在**浏览器**里的 cordis 实例，宿主用 `ctx.provide('survivalState')`
+ * 注册的服务在这里永远取不到——两者之间没有自动通道。数据必须经
+ * `connection.rpc.call` 跨进程取，封装见 bridge 中的 createClientService。
+ *
+ * `slots` 是硬依赖。`connection` 走 ctx.inject 延迟注入：它在 apply() 执行时
+ * 可能还没就绪，直接 `ctx.connection` 会抛 `cannot get property … without inject`。
  */
 export default {
   name: 'dsh-survival-mode/client',
@@ -345,18 +512,32 @@ export default {
     const disposeStyles = injectStyles()
     ctx.effect(() => disposeStyles)
 
-    // survival 服务由本插件的 Host 半体 provide；取不到就静默退出，不让页面报错。
-    const service = ctx.get('survivalState')
-    if (service === undefined || service === null) return
-    const presets = ctx.get('survivalStateMeta') ?? { presets: [], foods: [] }
+    ctx.inject(['connection'], (injected) => {
+      const rpc = injected.get('connection')?.rpc
+      const raw = rpc !== undefined && rpc !== null ? rpc.call : undefined
+      if (typeof raw !== 'function') return
+      const call = raw.bind(rpc)
 
-    ctx.slots.inject('shell.overlay', () => ctx.slots.register(
-      { name: 'shell.overlay', id: 'dsh-survival-mode', order: 40, label: '生存模式' },
-      () => React.createElement(SurvivalPanel, {
-        service,
-        presets: presets.presets ?? [],
-        foods: presets.foods ?? [],
-      }),
-    ))
+      const service = withMutations(createClientService({
+        call: (channel, endpoint, payload) => call(channel, endpoint, payload),
+        fallback: FALLBACK_SNAPSHOT,
+      }))
+
+      // 先拉一次让面板立刻有数据，再按固定间隔保持同步。
+      void service.refresh()
+      // 用浏览器全局定时器，不走 ctx.setInterval：这里只声明了 connection，
+      // 客户端 timer 服务需要额外 inject: ['timer']，漏声明会在取值时直接抛错。
+      const timer = globalThis.setInterval(() => {
+        void service.refresh()
+      }, RPC_POLL_MS)
+      injected.effect(() => () => globalThis.clearInterval(timer))
+
+      ctx.slots.inject('shell.overlay', () => ctx.slots.register(
+        { name: 'shell.overlay', id: 'dsh-survival-mode', order: 40, label: '生存模式' },
+        // 预设与食物表由宿主提供（数值只有宿主一份真值），因此这里挂一个薄壳组件
+        // 在内部异步取一次——hooks 只能在组件里用，不能在 apply() 里调。
+        () => React.createElement(SurvivalPanelHost, { service, call }),
+      ))
+    })
   },
 }

@@ -3,7 +3,8 @@
  *
  * 与动态插件版本的差异（改写时必须注意）：
  * - 不再有沙箱提供的 `harness` 全局；工具用 @deepseek-ai/dsh-tools 的 defineTool 注册。
- * - 面板经 `ctx.provide('survivalState', …)` 读同一份状态，不再需要 Package-private RPC。
+ * - 面板不能直接读宿主服务：客户端跑在浏览器的另一个 cordis 实例里，
+ *   必须经 `connection.rpc` 跨进程取数据，见 src/bridge.mjs。
  *
  * 三个事件钩子的选择理由见 src/state.mjs 顶部注释，改动前请先读。
  */
@@ -11,13 +12,22 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
 import { FOODS, PRESET_LABELS, PRESETS } from './config.mjs'
+import { mountHostBridge } from './bridge.mjs'
 import { createSurvivalState } from './state.mjs'
 import { FEED_TOOL_NAME, createFeedTool } from './tool.mjs'
 
 export const name = 'dsh-survival-mode'
 
-/** tools 与 systemPrompt 是硬依赖：缺任一都没法工作，交给 cordis 等待与重挂。 */
-export const inject = ['tools', 'systemPrompt']
+/**
+ * 都是硬依赖，缺任一都会让 apply() 取不到东西，交给 cordis 等待与重挂。
+ *
+ * `timer` 是必须声明的：掉血定时器走 `ctx.setInterval()`，而 timer 服务用
+ * `ctx.mixin("timer", [timeout, interval, throttle, debounce, setTimeout, setInterval])`
+ * 把这六个方法全挂在 "timer" 服务之下——cordis 的作用域代理只放行 inject 里
+ * 声明过的服务属性，漏声明的表现是 apply() 直接抛
+ * `cannot get property "timer" without inject`，整个插件树加载失败。
+ */
+export const inject = ['tools', 'systemPrompt', 'timer']
 
 /** 服务键：客户端半体通过它读状态、喂食、切预设。 */
 export const SERVICE_KEY = 'survivalState'
@@ -43,6 +53,8 @@ export function apply(ctx) {
   /** 挂上掉血定时器；重复调用是幂等的。 */
   function ensureTimer() {
     if (stopTimer !== null) return
+    // 用 setInterval 而非 ctx.interval：两者都归属 "timer" 服务（见 inject 注释），
+    // 但 ctx.interval 在本 harness 版本里会让 apply() 停在 pending、服务不生效。
     stopTimer = ctx.setInterval(() => {
       survival.tick()
     }, survival.tickIntervalMs())
@@ -150,4 +162,20 @@ export function apply(ctx) {
     survival,
     foods: Object.keys(FOODS).map((key) => ({ key, ...FOODS[key] })),
   }))
+
+  // 面板桥：把状态经 connection.rpc 送进浏览器。`connection` 可能在 apply()
+  // 执行时还没就绪，所以走 ctx.inject 的延迟 fiber——等齐服务才注册，绝不抛错。
+  ctx.inject(['connection'], (injected) => {
+    mountHostBridge({
+      survival,
+      // 静态表随桥一起送出去：数值只有宿主一份真值，客户端不复制。
+      meta: {
+        presets: Object.keys(PRESETS).map((id) => ({ id, label: PRESET_LABELS[id], ...PRESETS[id] })),
+        foods: Object.keys(FOODS).map((key) => ({ key, ...FOODS[key] })),
+      },
+      connection: injected.get('connection'),
+      effect: (fn, label) => injected.effect(fn, label),
+      log: (message) => console.log(message),
+    })
+  })
 }
