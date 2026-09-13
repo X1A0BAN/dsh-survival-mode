@@ -10,6 +10,7 @@
 血空了全局工具被冻结——只剩对话能力，喂食才能复活。<br>
 ~~越flash死得越快~~
 
+[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 [![DSH >=0.1.0-rc.5](https://img.shields.io/badge/DSH-%3E%3D0.1.0--rc.5-blue)](https://github.com/deepseek-ai/deepseek-harness)
 [![Node >=22.19.0](https://img.shields.io/badge/Node-%3E%3D22.19.0-brightgreen)](https://nodejs.org/)
