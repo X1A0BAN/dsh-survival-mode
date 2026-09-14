@@ -140,6 +140,42 @@ dsh plugin --profile web remove dsh-survival-mode
 
 ---
 
+## 🎨 贴图：是 Minecraft 原版贴图，不是手绘仿制
+
+小游戏刚做出来时贴图是代码里手绘的 16×16 字符画（`pixelTexture()` 调色板拼 SVG），
+方块色偏和花纹都跟原版对不上。现在场景、热键栏、合成界面、面板图标全部换成**原版素材**。
+
+```sh
+npm run textures      # 重新生成原版贴图（默认钉在 1.21.4）
+```
+
+管线做的事（`scripts/vanilla-textures.mjs`）：
+
+1. 取官方版本清单 → 版本 json → `downloads.client`，从 **piston-data.mojang.com** 下客户端 jar；
+2. 用自写的零依赖 ZIP 读取器（`scripts/zip.mjs`）从 jar 里取 `assets/minecraft/textures/**`；
+3. 用自写的零依赖 PNG 编解码（`scripts/png.mjs`）处理，产出 data URI 写进 `assets/vanilla/textures.json`；
+4. `scripts/build.mjs` 构建期把它注入 `lib/client.js` —— 所以**运行期依旧零网络请求**，产物自包含
+   （npm 的 `files` 白名单里没有 `assets/`，但内联后不影响安装）。
+
+三个值得记的坑：
+
+- **贴图不在资源索引里。** 现代 MC 的公开 `assetIndex` 只有音效/语言/字体（4000+ 条），
+  方块与物品贴图是直接打在客户端 jar 内的。别照着 `resources.download.minecraft.net` 找贴图。
+- **树叶是带噪声的灰度图。** 原版 `oak_leaves.png` 是等生物群系染色的灰度图，但带有 ±4 的编码噪声
+  （实测 `185,188,185`、`104,100,104`）。严格 `r==g==b` 判定会把树叶当成彩色图、跳过染色，
+  结果场景里树叶发白。`isGrayscale()` 因此带 8 的容差。
+- **村民没有「正面站立图」。** 村民在原版是实体模型，得按模型 UV 从 64×64 皮肤裁正面面片拼成 16×32。
+  UV 公式里竖直偏移是 `v+dz`（深度）**不是** `v+dh`；写错会让整张图各面片下移 2–6 像素，
+  拼出来的「村民」身体是一块灰墙。`test/vanilla-textures.test.mjs` 用结构性断言守住这一点。
+
+> **版权提醒。** 原版贴图是 Mojang 的版权素材，内联进公开仓库属于再分发，官方 usage guidelines
+> 并不允许这么做。本仓库按所有者要求保留，你若不想公开分发：把 `assets/vanilla/` 加进 `.gitignore`，
+> 同时删掉 `test/vanilla-textures.test.mjs` 里依赖贴图产物的用例——`src/` 与构建脚本一行都不用改，
+> 客户端会自动回退到内置的手绘像素画（`TEX = HAND_TEX + VANILLA_TEX`，两层键集对齐）。
+> 缺失的键（如原版没找 `skull` 贴图）由 `icon()` 逐个退回 emoji，不会出现半张图。
+
+---
+
 ## 🤖 模型侧接口
 
 插件注册了一个模型可调用的工具：
@@ -162,8 +198,9 @@ dsh plugin --profile web remove dsh-survival-mode
 ```sh
 node test/host.test.mjs          # 14 个状态机行为测试
 node test/host-contract.test.mjs # 真实 defineTool 编译工具 schema + 包文件清单
-node scripts/build.mjs           # 产出 lib/
+node scripts/build.mjs           # 产出 lib/（注入 assets/vanilla/textures.json）
 node scripts/verify.mjs          # 产物自检 29 项（发布前必跑）
+npm run textures                 # 拉官方客户端 jar 重新生成原版贴图（需要外网）
 npm test                         # 上面两个测试串行跑
 ```
 
@@ -199,9 +236,13 @@ src/config.mjs         三档预设、边界、食物表
 src/state.mjs          核心状态机（纯逻辑、零依赖，可直接脱离 DSH 测试）
 src/tool.mjs           survival_feed 工具定义（接受 defineTool，因此可被真实编译器验证）
 src/index.mjs          Host 半体：服务、事件钩子、提示词注入
-src/client/index.js    客户端半体：shell.overlay 上的 HUD 面板
-scripts/build.mjs      零依赖构建器（包裹 __ModuleLoader__ 闭包工厂）
+src/client/index.js    客户端半体：shell.overlay 上的 HUD 面板 + MC 采集小游戏
+scripts/build.mjs      零依赖构建器（包裹 __ModuleLoader__ 闭包工厂，注入原版贴图）
+scripts/vanilla-textures.mjs  原版贴图管线（官方客户端 jar → data URI）
+scripts/png.mjs        零依赖 PNG 编解码 + 栅格操作（染色 / 叠加 / 放大 / 裁切）
+scripts/zip.mjs        零依赖 ZIP 读取（从客户端 jar 里取贴图）
 scripts/verify.mjs     产物自检
+assets/vanilla/        原版贴图原件与产物（textures.json 入库；cache/ 是 jar，已 ignore）
 lib/                   构建产物（已入库）
 ```
 

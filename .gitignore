@@ -18,3 +18,7 @@ Thumbs.db
 
 # 与本插件无关的来时文件（dsh-market 的日志导出，不属于本仓库）
 dsh-market-log.txt
+
+# 原版贴图管线下载的官方客户端 jar（27–37 MB）：只是构建期的素材来源，不入库。
+# assets/vanilla/{raw,textures.json,preview} 是入库的 —— 版权取舍见 README「贴图来源」。
+assets/vanilla/cache/

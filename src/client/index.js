@@ -64,6 +64,8 @@ const CSS = [
   '.dsv-badge{position:fixed;right:22px;bottom:22px;z-index:60;pointer-events:auto;display:flex;align-items:center;gap:6px;border-radius:999px;padding:6px 12px;cursor:pointer;background:var(--dsh-surface,#1b1b21);border:1px solid var(--dsh-border,rgba(255,255,255,.13));box-shadow:0 8px 24px rgba(0,0,0,.3);color:var(--dsh-text,#e8e8ed);font-variant-numeric:tabular-nums}',
   '.dsv-own{display:block;font-size:9px;opacity:.8;font-variant-numeric:tabular-nums}',
   '.dsv-game{width:100%;margin-top:6px}',
+  // 原版贴图图标：pixelated 保证 16×16 放大到 12–14px 不糊；缺贴图时同一 class 承载 emoji。
+  '.dsv-ico{display:inline-block;vertical-align:-2px;image-rendering:pixelated;flex:0 0 auto}',
   // MC 采集小游戏：2D 横板场景 + 热键栏背包 + 工作台合成弹窗。
   '.dsm-root{position:fixed;left:22px;bottom:22px;z-index:61;pointer-events:auto;font:12px/1.5 "Courier New",ui-monospace,monospace}',
   '.dsm-root *{box-sizing:border-box}',
@@ -82,6 +84,9 @@ const CSS = [
   '.dsm-actor:hover{filter:brightness(1.15)}',
   '.dsm-actor:active{transform:scale(.94)}',
   '.dsm-tag{position:absolute;transform:translateX(-50%);background:rgba(0,0,0,.55);color:#fff;font-size:9px;padding:1px 5px;border-radius:3px;white-space:nowrap;pointer-events:none;z-index:4}',
+  // .dsm-scene img 是 display:block（方块平铺要用），标签里的图标得覆盖回行内。
+  '.dsm-tag img{display:inline-block;vertical-align:-2px;width:10px;height:10px;image-rendering:pixelated}',
+  '.dsm-headtitle{display:flex;align-items:center;gap:4px}',
   '.dsm-float{position:absolute;pointer-events:none;font-weight:700;font-size:13px;text-shadow:1px 1px 0 #000;animation:dsmFloat 1.1s ease-out forwards;z-index:5;white-space:nowrap;transform:translateX(-50%)}',
   '@keyframes dsmFloat{0%{opacity:0;margin-top:6px}15%{opacity:1}100%{opacity:0;margin-top:-30px}}',
   '.dsm-msg{position:absolute;left:0;right:0;bottom:4px;text-align:center;font-size:11px;color:#fff;text-shadow:1px 1px 0 #000;pointer-events:none;z-index:4}',
@@ -288,10 +293,11 @@ function invCount(snapshot, key) {
 }
 
 /**
- * MC 场景贴图：16×16 字符画像素 SVG，编译成 data URI 内联进 bundle。
+ * MC 贴图的**回退层**：16×16 字符画像素 SVG，编译成 data URI 内联进 bundle。
  *
- * 完全离线：统一走这份零网络依赖的像素画，不请求任何外部资源，
- * webview 是否在线都不影响出图，永远不会裂图。
+ * 为什么留着它而不是直接删掉：原版贴图是构建期从 assets/vanilla/textures.json 注入的
+ * （见下方 VANILLA_TEX），一旦有人没跑贴图管线就 clone 下来构建，这一层保证场景与
+ * 热键栏仍然完整可玩，绝不裂图——它零依赖、零网络、永远出图。
  *
  * 每个字符是 1 个像素，字符 → 颜色由调色板给出；'.' 表示透明。
  */
@@ -315,7 +321,21 @@ function pixelTexture(rows, palette) {
   )
 }
 
-const TEX = {
+/**
+ * 构建期从 assets/vanilla/textures.json 注入的 **Minecraft 原版贴图**（键 → PNG data URI）。
+ *
+ * **这行必须原样保留**：scripts/build.mjs 用正则匹配这一行并替换成真实贴图表。
+ * 源码态是空对象，所以直接跑 src/（不经过构建）时全部回退到下面的手绘像素画。
+ *
+ * 贴图本身由 scripts/vanilla-textures.mjs 从官方客户端 jar 里取，仍然**内联进 bundle**，
+ * 于是运行期和以前一样零网络请求——换成原版贴图没有引入任何联网依赖。
+ */
+const VANILLA_TEX = {}
+
+/**
+ * 手绘像素画贴图表（回退层，同名键会被上面的原版贴图覆盖）。
+ */
+const HAND_TEX = {
   // 草方块侧面：上 4 行草皮（底缘参差），下面是泥土。
   grass: pixelTexture([
     'GGGGGGGGGGGGGGGG',
@@ -524,6 +544,15 @@ const TEX = {
   ], { Y: '#ffd83d', W: '#fff3b0', y: '#d9a924' }),
 }
 
+/**
+ * 最终贴图表：**原版贴图优先，缺失的键回退到手绘像素画**。
+ *
+ * 两层键集刻意对齐（方块/物品 16×16、村民 16×32），所以浅合并即可安全换图；
+ * 原版独有的键（stone/planks/pickaxe/heart/foodFull/skull）在没有注入时是
+ * undefined，客户端用 icon() 统一退回 emoji，不会出现半张图。
+ */
+const TEX = Object.assign({}, HAND_TEX, VANILLA_TEX)
+
 /** 物品键 → 热键栏/合成界面用的贴图与中文名。 */
 const ITEM_VIEW = {
   apple: { icon: TEX.apple, label: '苹果' },
@@ -541,6 +570,29 @@ const ITEM_TEX_KEY = {
   bread: 'bread',
   golden_apple: 'goldenApple',
   gold_ingot: 'goldIngot',
+}
+
+/**
+ * 造一个贴图图标：原版贴图存在就用 `<img>`（pixelated 放大，不糊），否则退回 emoji。
+ *
+ * 为什么不做成「要么全 img 要么全 emoji」：原版贴图里 HUD 图标（heart/food）是
+ * 可选素材，不同版本路径可能不同；逐个图标降级能保证任何情况下面板都长得完整。
+ *
+ * @param source 贴图 data URI；缺失时传 undefined。
+ * @param emoji 退化用的 emoji。
+ * @param size 边长（px）。
+ * @returns React 元素。
+ */
+function icon(source, emoji, size) {
+  if (typeof source === 'string') {
+    return React.createElement('img', {
+      className: 'dsv-ico',
+      src: source,
+      alt: '',
+      style: { width: size + 'px', height: size + 'px' },
+    })
+  }
+  return React.createElement('span', { className: 'dsv-ico', style: { fontSize: size + 'px' } }, emoji)
 }
 
 /**
@@ -573,8 +625,8 @@ const FLOAT_ANCHOR = {
 }
 
 /*
- * 完全离线：不使用任何在线贴图。所有材质统一来自上方 TEX 的内置像素画
- * （data URI，编译进 bundle），场景与热键栏无一句联网请求，
+ * 运行期完全离线：所有材质都是上方 TEX 里的 data URI（原版贴图由构建期从官方客户端 jar
+ * 取出后内联，手绘像素画作为回退层），场景与热键栏无一句联网请求，
  * 即便 webview 处于离线状态也能完整出图。
  */
 
@@ -585,7 +637,7 @@ const FLOAT_ANCHOR = {
  * - 中间一个村民（1 格宽 2 格高）：点击概率给面包。
  * - 右侧一个工作台（1 格）：点击弹出合成界面（8 金锭 + 1 苹果 → 金苹果）。
  * - 地下一行金矿（各 1 格）：点击小概率给金锭。
- * 贴图完全离线：统一使用内置本地像素画（data URI），不请求任何外部资源。
+ * 贴图运行期完全离线：原版贴图（构建期从官方客户端 jar 内联）+ 手绘回退层，全是 data URI。
  * 数据全部经 service.harvest/craft 走宿主结算，本地只负责展示与飘字。
  *
  * @param props service、snapshot、recipes、onClose。
@@ -706,7 +758,8 @@ function McGame(props) {
     ),
     apples,
     React.createElement('div', { className: 'dsm-tag', style: { left: '140px', top: '306px' } },
-      '🍎 ' + String(snapshot.treeReady) + '/3'
+      icon(tex.apple, '🍎', 10),
+      ' ' + String(snapshot.treeReady) + '/3'
       + (snapshot.treeNextIn === null ? ' 已满' : ' · 下一颗 ' + String(snapshot.treeNextIn) + 's')),
     // 村民：一格宽、两格高，脚踩草皮。
     React.createElement('button', {
@@ -796,7 +849,8 @@ function McGame(props) {
   return React.createElement('div', { className: 'dsm-root' },
     React.createElement('div', { className: 'dsm-win' },
       React.createElement('div', { className: 'dsm-head' },
-        React.createElement('span', null, '⛏ MC 采集小游戏'),
+        React.createElement('span', { className: 'dsm-headtitle' },
+          icon(tex.pickaxe, '⛏', 14), 'MC 采集小游戏'),
         React.createElement('button', { className: 'dsm-x', onClick: props.onClose, title: '关闭' }, '×'),
       ),
       scene,
@@ -964,7 +1018,9 @@ function SurvivalPanel(props) {
       title: '展开生存模式面板',
     },
       React.createElement('span', { className: 'dsv-dot', style: { background: dotColor, color: dotColor } }),
-      React.createElement('span', null, '🍖 ' + String(snapshot.hunger) + ' · ❤ ' + String(snapshot.health)),
+      React.createElement('span', null,
+        icon(TEX.foodFull, '🍖', 12), ' ' + String(snapshot.hunger), ' · ',
+        icon(TEX.heart, '❤', 12), ' ' + String(snapshot.health)),
     )
   }
 
@@ -1049,18 +1105,20 @@ function SurvivalPanel(props) {
       head,
       modes,
       React.createElement('div', { className: 'dsv-row' },
-        React.createElement('span', null, '🍖 饱食度'),
+        React.createElement('span', null, icon(TEX.foodFull, '🍖', 12), ' 饱食度'),
         React.createElement('span', null, String(snapshot.hunger) + ' / ' + String(snapshot.maxHunger)),
       ),
       bar(snapshot.hungerPercent, COLOR.hunger, COLOR.hungerLow),
       React.createElement('div', { className: 'dsv-row' },
-        React.createElement('span', { className: 'dsv-hp' }, '❤ 生命'),
+        React.createElement('span', { className: 'dsv-hp' }, icon(TEX.heart, '❤', 12), ' 生命'),
         React.createElement('span', { className: 'dsv-hp' }, String(snapshot.health) + ' / ' + String(snapshot.maxHealth)),
       ),
       bar(snapshot.healthPercent, COLOR.hp, COLOR.hpLow),
       React.createElement('div', { className: 'dsv-actions' },
         props.foods.map((food) => {
           const count = invCount(snapshot, food.key)
+          // 原版食物贴图（苹果/面包/金苹果）走跟热键栏同一张表，按钮不再用 emoji。
+          const foodView = ITEM_VIEW[food.key]
           // 复活食物由宿主快照显式给出（reviveFood），不靠"食物表最后一项"的位置假设。
           const isReviveItem = food.key === (snapshot.reviveFood ?? 'golden_apple')
           const blocked = busy || count <= 0
@@ -1080,11 +1138,13 @@ function SurvivalPanel(props) {
             onClick: () => doFeed(food.key),
           },
             React.createElement('span', null,
-              isReviveItem && dead
-                ? food.emoji + ' 复活'
-                : food.emoji + ' ' + food.label),
+              icon(foodView === undefined ? undefined : foodView.icon, food.emoji, 14),
+              isReviveItem && dead ? ' 复活' : ' ' + food.label),
             React.createElement('small', null,
-              '+' + String(food.hunger) + (food.hp > 0 ? ' +' + String(food.hp) + '❤' : '')),
+              '+' + String(food.hunger),
+              food.hp > 0
+                ? React.createElement('span', null, ' +' + String(food.hp), icon(TEX.heart, '❤', 10))
+                : null),
             React.createElement('small', { className: 'dsv-own' }, '已有 × ' + String(count)),
           )
         }),
@@ -1092,7 +1152,8 @@ function SurvivalPanel(props) {
       React.createElement('button', {
         className: 'dsv-btn dsv-game',
         onClick: () => setGameOpen(!gameOpen),
-      }, gameOpen ? '⛏ 收起 MC 采集小游戏' : '⛏ 打开 MC 采集小游戏（获取食物）'),
+      }, icon(TEX.pickaxe, '⛏', 14),
+        gameOpen ? ' 收起 MC 采集小游戏' : ' 打开 MC 采集小游戏（获取食物）'),
       dead
         ? React.createElement('div', { className: 'dsv-alert' },
             '已饿死：工具已冻结，但对话仍然通畅。只有金苹果能复活（+'
@@ -1105,11 +1166,14 @@ function SurvivalPanel(props) {
             + String(snapshot.hpLossPerTick) + ' 生命'
             + (snapshot.secondsToDeath === null ? '' : '，约 ' + String(snapshot.secondsToDeath) + ' 秒后死亡') + '。')
         : null,
-      React.createElement('div', { className: 'dsv-deaths' }, '☠ 饿死次数  ' + String(snapshot.deathCount)),
+      React.createElement('div', { className: 'dsv-deaths' },
+        icon(TEX.skull, '☠', 12), ' 饿死次数  ' + String(snapshot.deathCount)),
       toast === '' ? null : React.createElement('div', { className: 'dsv-note' }, toast),
       React.createElement('div', { className: 'dsv-note' },
         '每步 -' + String(snapshot.hungerPerStep) + ' 饱食 · 掉血 '
-        + String(snapshot.tickSeconds) + 's/' + String(snapshot.hpLossPerTick) + ' ❤ · 累计思考 '
+        + String(snapshot.tickSeconds) + 's/' + String(snapshot.hpLossPerTick),
+        icon(TEX.heart, '❤', 10),
+        ' · 累计思考 '
         + String(snapshot.stepCount) + ' 步 · 喂食 ' + String(snapshot.feedCount) + ' 次'
         + (snapshot.rescueCount > 0 ? ' · 抢救 ' + String(snapshot.rescueCount) + ' 次' : '')),
       config,

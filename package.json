@@ -55,8 +55,9 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "textures": "node scripts/vanilla-textures.mjs --preview",
     "verify": "node scripts/verify.mjs",
-    "test": "node test/host.test.mjs && node test/host-contract.test.mjs && node test/bridge.test.mjs && node test/index-boot.test.mjs && node test/client-runtime.test.mjs"
+    "test": "node test/host.test.mjs && node test/host-contract.test.mjs && node test/bridge.test.mjs && node test/index-boot.test.mjs && node test/client-runtime.test.mjs && node test/vanilla-textures.test.mjs"
   },
   "repository": {
     "type": "git",
