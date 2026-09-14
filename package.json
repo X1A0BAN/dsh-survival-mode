@@ -1,6 +1,6 @@
 {
   "name": "dsh-survival-mode",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "生存模式：整个 DSH 全局共享一条饱食度与生命。模型每次思考都消耗饱食度，吃饱了才干活，饿到归零就掉血，血空则全局工具被冻结，只有喂食才能复活。",
   "keywords": [
     "dsh",
